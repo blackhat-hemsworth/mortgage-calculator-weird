@@ -1,0 +1,167 @@
+---
+title: "mortgage thing"
+format: pdf
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+options(scipen = 999) 
+
+month_pmt <- function(balance, interest_rate, months) {
+  #' returns the necessary monthly payment to pay down a loan of a given 
+  #' balance / interest on time
+  #' @balance: numeric -- loan balance
+  #' @interest_rate: numeric -- loan interest rate
+  #' @months: numeric -- months to pay down 
+
+  ( balance * 
+      ( ( (interest_rate/12) * (1+interest_rate/12)^months ) / 
+          ( (1 + interest_rate/12)^months -1 ) ) 
+  ) |> 
+    round(2)
+}
+
+month_interest <- function(balance, interest_rate) {
+  #' returns the monthly interest in dollars based on balance and interest rate 
+  #' @balance: numeric -- loan balance
+  #' @interest_rate: numeric -- loan interest rate
+
+    (balance * (interest_rate/12)) |> round(2)
+}
+
+anticipate_months <- function(balance, interest_rate, payment) {
+  -log(1 - ((balance * (interest_rate/12)) / payment)) / 
+    log(1 + (interest_rate/12))
+}
+
+make_row <- function(prev_row) {
+  if (prev_row$weird_loan == T) {
+    month_pay <- month_pmt(prev_row$balance_left, 
+                           prev_row$interest_pct, 
+                           prev_row$months_left)
+    anticipated_months <-prev_row$months_left
+  }
+  else {
+    month_pay <- coalesce(prev_row$month_pay, month_pmt(prev_row$total, 
+                                                         prev_row$interest_pct, 
+                                                         prev_row$total_months)) 
+    anticipated_months <- anticipate_months(prev_row$balance_left,
+                                         prev_row$interest_pct,
+                                         month_pay)
+  }
+
+  anticipated_rem <- month_pay*anticipated_months
+  interest_payment <- month_interest(prev_row$balance_left, 
+                                     prev_row$interest_pct)
+  principal <- month_pay - interest_payment
+
+  anticipated_total <- prev_row$a_so_far + prev_row$b_so_far + anticipated_rem
+  a_anticipated_rem <- anticipated_total*prev_row$a_share_total - prev_row$a_so_far
+  a_pay <- a_anticipated_rem / prev_row$months_left 
+  b_pay <- month_pay - a_pay
+  a_extra <- ifelse(prev_row$a_extra_months >= prev_row$month + 1,
+                    prev_row$a_extra_amount,
+                    0)
+
+  return(
+    list(
+      "weird_loan" = prev_row$weird_loan,
+      "total" = prev_row$total,
+      "total_months" = prev_row$total_months,
+      "interest_pct" = prev_row$interest_pct,
+      "month" = prev_row$month + 1,
+      "a_share_total" = prev_row$a_share_total,
+      "a_extra_months" = prev_row$a_extra_months,
+      "a_extra_amount" = prev_row$a_extra_amount, 
+      "opening_balance" = prev_row$balance_left,
+      "interest" = interest_payment,
+      "principal" = principal,
+      "loan_pay" = month_pay,
+      "a_share" = a_pay,
+      "b_share" = b_pay,
+      "a_extra" = a_extra,
+      "balance_left" = prev_row$balance_left - principal - a_extra,
+      "months_left" = anticipated_months - 1,
+      "anticipated_remaining" = anticipated_rem,
+      "a_so_far" = a_pay + prev_row$a_so_far + a_extra,
+      "b_so_far" = b_pay + prev_row$b_so_far
+    )
+  )
+}
+
+amortize_loan <- function(balance, term_months, interest_rate, a_share = .5, 
+                          a_down, b_down,
+                          a_extra_months = 0, a_extra_amount = 1000,
+                          weird_loan = T) {
+  row <- 
+    make_row(list(
+              "weird_loan" = weird_loan,
+              "total" = balance, 
+              "total_months" = term_months, 
+              "interest_pct" = interest_rate, 
+              "month" = 0,
+              "a_share_total" = a_share,
+              "a_extra_months" = a_extra_months,
+              "a_extra_amount" = a_extra_amount,
+              "opening_balance" = balance,  
+              "balance_left" = balance,  
+              "months_left" = term_months, 
+              "a_so_far" = a_down, 
+              "b_so_far" = b_down
+              ))
+
+  amortization <- data.frame(row)
+  balance_left <- min(amortization$closing)
+
+  while (balance_left > 10) {
+    row <- make_row(row)
+    amortization <- rbind(amortization, row) # shockingly inefficient 
+    balance_left <- row$balance_left
+  }
+  
+  amortization <- 
+    amortization |> 
+    select(-weird_loan,-total, -total_months,
+           -interest_pct,-a_extra_months,-a_share_total,
+           -a_extra_amount) |>
+    mutate(fam_difference = a_so_far - b_so_far,
+           a_loan_share = a_so_far - a_down,
+           b_loan_share = b_so_far - b_down
+           )
+    
+  return(amortization)
+}
+```
+
+```{r}
+#| echo: false
+
+amortization <- 
+  amortize_loan(balance = 325000, 
+                term_months = 360, 
+                interest_rate =.065,
+                a_share = .5,
+                a_down = 100000,
+                b_down = 50000,
+                a_extra_months = 62,
+                a_extra_amount = 1000,
+                weird_loan = T)
+
+
+
+amortization |> 
+    ggplot(aes(x = month)) + 
+    geom_line(groups = 1, aes(y = a_share, color = "A")) + 
+    geom_line(groups = 1, aes(y = b_share, color = "B")) + 
+    scale_y_continuous(limits = c(0,1750)) + 
+    labs(title = "Title",
+         x="Months", 
+         y = "Monthly payment (incl. tax)") + 
+    theme_bw()
+
+ggsave("test.png")
+#amortization |> write.csv("no-early-pay.csv")
+amortization |> writexl::write_xlsx("test.png.xlsx")
+
+```
